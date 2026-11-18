@@ -246,6 +246,7 @@ def initiate_stk_push(payment):
     payment.phone_number = phone
     payment.merchant_request_id = data.get("MerchantRequestID", "")
     payment.checkout_request_id = checkout_id
+    payment.stk_timestamp = timestamp
     payment.result_description = data.get(
         "ResponseDescription",
         "STK Push request accepted for processing."
@@ -256,9 +257,75 @@ def initiate_stk_push(payment):
         "phone_number",
         "merchant_request_id",
         "checkout_request_id",
+        "stk_timestamp",
         "result_description",
         "updated_at",
     ])
 
     return data
 
+def query_stk_push(payment):
+    """
+    Query Safaricom for the status of an existing STK Push request.
+
+    This function returns Daraja's response without independently
+    marking the payment as successful or failed.
+    """
+
+    shortcode = os.getenv("MPESA_SHORTCODE")
+
+    if not shortcode:
+        raise MpesaConfigurationError(
+            "MPESA_SHORTCODE is missing from .env."
+        )
+
+    if not payment.checkout_request_id:
+        raise ValueError(
+            "This payment has no CheckoutRequestID to query."
+        )
+
+    # Generate the timestamp and password for this query.
+    timestamp, password = generate_stk_password()
+
+    access_token = get_access_token()
+
+    url = f"{get_base_url()}/mpesa/stkpushquery/v1/query"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "BusinessShortCode": shortcode,
+        "Password": password,
+        "Timestamp": timestamp,
+        "CheckoutRequestID": payment.checkout_request_id,
+    }
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=(5, 30),
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    except requests.exceptions.RequestException as error:
+        raise MpesaAPIError(
+            "Could not query the STK Push transaction with Safaricom."
+        ) from error
+
+    except ValueError as error:
+        raise MpesaAPIError(
+            "Safaricom returned an invalid STK Query response."
+        ) from error
+
+    if not isinstance(data, dict):
+        raise MpesaAPIError(
+            "Safaricom returned an unexpected STK Query response."
+        )
+
+    return data

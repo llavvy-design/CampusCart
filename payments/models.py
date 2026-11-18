@@ -37,6 +37,11 @@ class Payment(models.Model):
         blank=True
     )
 
+    stk_timestamp = models.CharField(
+    max_length=14,
+    blank=True
+    )
+
     checkout_request_id = models.CharField(
         max_length=100,
         unique=True,
