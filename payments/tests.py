@@ -278,7 +278,7 @@ class PaymentStatusViewTests(TestCase):
 
         response = self.client.get(self.url)
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
 
     @patch("payments.views.query_stk_push")
     def test_buyer_cannot_check_another_buyers_payment(self, mock_query):
@@ -337,4 +337,3 @@ class PaymentStatusViewTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
         mock_query.assert_not_called()
-        

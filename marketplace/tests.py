@@ -1,4 +1,4 @@
-
+from rest_framework.test import APIClient
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -37,7 +37,8 @@ class OrderCheckoutTests(TestCase):
             kwargs={"order_id": self.order.pk}
         )
 
-        self.client.force_login(self.buyer)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.buyer)
 
     def mock_successful_stk_push(self, payment):
         """Simulate Safaricom accepting an STK Push request."""
@@ -110,15 +111,15 @@ class OrderCheckoutTests(TestCase):
         self.assertEqual(payment.amount, Decimal("500.00"))
 
     def test_unauthenticated_user_cannot_checkout(self):
-        self.client.logout()
+        self.client.force_authenticate(user=None)
 
         response = self.client.post(
-            self.checkout_url,
-            {"phone_number": "0712345678"},
-            content_type="application/json"
+        self.checkout_url,
+        {"phone_number": "0712345678"},
+        content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
         self.assertEqual(Payment.objects.count(), 0)
 
     def test_buyer_cannot_checkout_another_users_order(self):
