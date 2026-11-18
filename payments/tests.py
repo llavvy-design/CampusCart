@@ -1,7 +1,13 @@
 import json
 from decimal import Decimal
 from unittest.mock import Mock, patch
-from .services.mpesa import MpesaConfigurationError, query_stk_push
+from rest_framework.test import APIClient
+
+from .services.mpesa import (
+    MpesaAPIError,
+    MpesaConfigurationError,
+    query_stk_push,
+)
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -212,3 +218,123 @@ class MpesaQueryTests(TestCase):
         with patch.dict("os.environ", {"MPESA_SHORTCODE": ""}):
             with self.assertRaises(MpesaConfigurationError):
                 query_stk_push(self.payment)
+
+
+class PaymentStatusViewTests(TestCase):
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.buyer = User.objects.create_user(
+            username="status_test_buyer",
+            password="test-password-123"
+        )
+
+        self.other_buyer = User.objects.create_user(
+            username="other_status_buyer",
+            password="test-password-123"
+        )
+
+        self.order = Order.objects.create(
+            buyer=self.buyer,
+            total_amount=Decimal("500.00")
+        )
+
+        self.payment = Payment.objects.create(
+            order=self.order,
+            phone_number="254712345678",
+            amount=Decimal("500.00"),
+            checkout_request_id="ws_CO_STATUS_TEST_123"
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.buyer)
+
+        self.url = f"/payments/{self.payment.pk}/status/"
+
+    @patch("payments.views.query_stk_push")
+    def test_buyer_can_check_pending_payment(self, mock_query):
+        mock_query.return_value = {
+            "ResponseCode": "0",
+            "ResponseDescription": "Query accepted",
+            "CheckoutRequestID": "ws_CO_STATUS_TEST_123"
+        }
+
+        response = self.client.get(self.url)
+
+        self.payment.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], Payment.Status.PENDING)
+        self.assertIn("query_response", response.data)
+
+        # An accepted query must not mark payment as successful.
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+
+        mock_query.assert_called_once()
+
+    def test_unauthenticated_user_cannot_check_payment(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("payments.views.query_stk_push")
+    def test_buyer_cannot_check_another_buyers_payment(self, mock_query):
+        other_order = Order.objects.create(
+            buyer=self.other_buyer,
+            total_amount=Decimal("300.00")
+        )
+
+        other_payment = Payment.objects.create(
+            order=other_order,
+            phone_number="254711111111",
+            amount=Decimal("300.00"),
+            checkout_request_id="ws_CO_OTHER_BUYER_123"
+        )
+
+        response = self.client.get(
+            f"/payments/{other_payment.pk}/status/"
+        )
+
+        self.assertEqual(response.status_code, 404)
+        mock_query.assert_not_called()
+
+    @patch("payments.views.query_stk_push")
+    def test_finalized_payment_does_not_query_daraja(self, mock_query):
+        self.payment.status = Payment.Status.SUCCESSFUL
+        self.payment.mpesa_receipt_number = "TESTRECEIPT123"
+        self.payment.save()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], Payment.Status.SUCCESSFUL)
+        self.assertEqual(
+            response.data["receipt_number"],
+            "TESTRECEIPT123"
+        )
+
+        mock_query.assert_not_called()
+
+    @patch("payments.views.query_stk_push")
+    def test_daraja_error_returns_gateway_error(self, mock_query):
+        mock_query.side_effect = MpesaAPIError(
+            "Safaricom API unavailable"
+        )
+
+        response = self.client.get(self.url)
+
+        self.payment.refresh_from_db()
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+
+    @patch("payments.views.query_stk_push")
+    def test_missing_payment_returns_404(self, mock_query):
+        response = self.client.get("/payments/99999/status/")
+
+        self.assertEqual(response.status_code, 404)
+        mock_query.assert_not_called()
+        

@@ -1,4 +1,3 @@
-
 import json
 import logging
 from decimal import Decimal, InvalidOperation
@@ -8,8 +7,19 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+
 from .models import Payment
-from .services.mpesa import normalize_mpesa_phone
+from .services.mpesa import (
+    MpesaAPIError,
+    MpesaConfigurationError,
+    normalize_mpesa_phone,
+    query_stk_push,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -193,3 +203,73 @@ def mpesa_callback(request):
     return JsonResponse(
         {"ResultCode": 0, "ResultDesc": "Payment processed successfully"}
     )
+
+
+class PaymentStatusView(APIView):
+    """
+    Allow an authenticated buyer to check their own payment status.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, payment_id):
+        # Only retrieve payments belonging to the logged-in buyer.
+        payment = get_object_or_404(
+            Payment.objects.select_related("order"),
+            pk=payment_id,
+            order__buyer=request.user
+        )
+
+        # Do not query Safaricom for payments already finalized.
+        if payment.status != Payment.Status.PENDING:
+            return Response({
+                "payment_id": payment.id,
+                "order_number": str(payment.order.order_number),
+                "amount": str(payment.amount),
+                "status": payment.status,
+                "receipt_number": payment.mpesa_receipt_number,
+                "message": "This payment has already been finalized."
+            }, status=status.HTTP_200_OK)
+
+        try:
+            daraja_response = query_stk_push(payment)
+
+        except (MpesaAPIError, MpesaConfigurationError):
+            logger.exception(
+                "STK Query failed for payment %s",
+                payment.pk
+            )
+
+            return Response({
+                "payment_id": payment.id,
+                "status": payment.status,
+                "message": "Unable to retrieve the latest payment status. Please try again."
+            }, status=status.HTTP_502_BAD_GATEWAY)
+
+        except ValueError:
+            logger.exception(
+                "Invalid STK Query request for payment %s",
+                payment.pk
+            )
+
+            return Response({
+                "payment_id": payment.id,
+                "status": payment.status,
+                "message": "This payment cannot currently be queried."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ResponseCode 0 means the query request was accepted,
+        # not necessarily that the customer completed payment.
+        return Response({
+            "payment_id": payment.id,
+            "order_number": str(payment.order.order_number),
+            "amount": str(payment.amount),
+            "status": payment.status,
+            "query_response": daraja_response,
+            "message": (
+                "Payment status query accepted. "
+                "The recorded payment status remains unchanged "
+                "until a verified callback is processed."
+            )
+        }, status=status.HTTP_200_OK)
+    
