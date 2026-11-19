@@ -1,9 +1,11 @@
+
 from decimal import Decimal
 
 from django.db import transaction
 
 from rest_framework import serializers
 
+from payments.models import Payment
 from payments.services.mpesa import normalize_mpesa_phone
 
 from .models import (
@@ -173,7 +175,7 @@ class OrderCreateSerializer(serializers.ModelSerializer):
 
 
 # ==================================================
-# SELLER ORDER SERIALIZERS
+# SHARED ORDER ITEM SERIALIZERS
 # ==================================================
 
 class SellerOrderItemSerializer(serializers.ModelSerializer):
@@ -194,6 +196,29 @@ class SellerOrderItemSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+
+class BuyerOrderItemSerializer(serializers.ModelSerializer):
+    line_total = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True
+    )
+
+    class Meta:
+        model = OrderItem
+        fields = [
+            "id",
+            "product_name",
+            "unit_price",
+            "quantity",
+            "line_total",
+        ]
+        read_only_fields = fields
+
+
+# ==================================================
+# SELLER ORDER SERIALIZERS
+# ==================================================
 
 class SellerOrderListSerializer(serializers.ModelSerializer):
     buyer_username = serializers.CharField(
@@ -299,7 +324,7 @@ class SellerOrderCancellationSerializer(serializers.Serializer):
         pending_payments = [
             payment
             for payment in payments
-            if payment.status == "pending"
+            if payment.status == Payment.Status.PENDING
         ]
 
         if pending_payments:
@@ -313,7 +338,7 @@ class SellerOrderCancellationSerializer(serializers.Serializer):
         successful_payments = [
             payment
             for payment in payments
-            if payment.status == "successful"
+            if payment.status == Payment.Status.SUCCESSFUL
         ]
 
         if successful_payments:
@@ -325,3 +350,84 @@ class SellerOrderCancellationSerializer(serializers.Serializer):
             })
 
         return attrs
+
+
+# ==================================================
+# BUYER ORDER SERIALIZERS
+# ==================================================
+
+class PaymentSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payment
+        fields = [
+            "id",
+            "amount",
+            "status",
+            "mpesa_receipt_number",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class BuyerOrderListSerializer(serializers.ModelSerializer):
+    seller_username = serializers.SerializerMethodField()
+    item_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "order_number",
+            "seller_username",
+            "status",
+            "total_amount",
+            "item_count",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_seller_username(self, obj):
+        if obj.seller_id is None:
+            return None
+
+        return obj.seller.username
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+
+class BuyerOrderDetailSerializer(serializers.ModelSerializer):
+    seller_username = serializers.SerializerMethodField()
+
+    items = BuyerOrderItemSerializer(
+        many=True,
+        read_only=True
+    )
+
+    payments = PaymentSummarySerializer(
+        many=True,
+        read_only=True
+    )
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "order_number",
+            "seller_username",
+            "status",
+            "total_amount",
+            "fulfilment_location",
+            "buyer_note",
+            "items",
+            "payments",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_seller_username(self, obj):
+        if obj.seller_id is None:
+            return None
+
+        return obj.seller.username
