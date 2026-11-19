@@ -1,4 +1,3 @@
-
 import uuid
 
 from decimal import Decimal
@@ -212,6 +211,17 @@ class Order(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="orders"
+    )
+
+    # Explicit seller ownership for reliable order management.
+    # Nullable to preserve existing orders whose seller cannot
+    # be determined from historical order items.
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="sales",
+        null=True,
+        blank=True
     )
 
     status = models.CharField(

@@ -4,14 +4,18 @@ from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from rest_framework.views import APIView
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
+
+from notifications.services.notification_service import create_notification
+
+from marketplace.models import Order
 
 from .models import Payment
 from .services.mpesa import (
@@ -20,7 +24,7 @@ from .services.mpesa import (
     normalize_mpesa_phone,
     query_stk_push,
 )
-from notifications.services.notification_service import create_notification
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,13 @@ def mpesa_callback(request):
 
     The checkout request ID links the callback to the original
     CampusCart payment attempt.
+
+    Locking order:
+    1. Order
+    2. Payment
+
+    This is shared with the order cancellation workflow to avoid
+    inconsistent locking order during concurrent operations.
     """
 
     try:
@@ -40,7 +51,7 @@ def mpesa_callback(request):
     except (json.JSONDecodeError, UnicodeDecodeError):
         return JsonResponse(
             {"ResultCode": 1, "ResultDesc": "Invalid JSON payload"},
-            status=400
+            status=400,
         )
 
     callback = payload.get("Body", {}).get("stkCallback", {})
@@ -52,24 +63,56 @@ def mpesa_callback(request):
     if not checkout_id or result_code is None:
         return JsonResponse(
             {"ResultCode": 1, "ResultDesc": "Missing callback information"},
-            status=400
+            status=400,
+        )
+
+    # Find the order ID first without locking the payment.
+    # The order is always locked before the payment below.
+    order_id = (
+        Payment.objects
+        .filter(checkout_request_id=checkout_id)
+        .values_list("order_id", flat=True)
+        .first()
+    )
+
+    if order_id is None:
+        logger.warning(
+            "Received callback for unknown CheckoutRequestID: %s",
+            checkout_id,
+        )
+
+        return JsonResponse(
+            {"ResultCode": 0, "ResultDesc": "Callback received"}
         )
 
     with transaction.atomic():
         try:
+            order = Order.objects.select_for_update().get(pk=order_id)
+        except Order.DoesNotExist:
+            logger.error(
+                "Order %s for payment callback no longer exists.",
+                order_id,
+            )
+
+            return JsonResponse(
+                {"ResultCode": 0, "ResultDesc": "Callback received"}
+            )
+
+        try:
             payment = (
                 Payment.objects
                 .select_for_update()
-                .select_related("order")
-                .get(checkout_request_id=checkout_id)
+                .get(
+                    checkout_request_id=checkout_id,
+                    order_id=order.pk,
+                )
             )
         except Payment.DoesNotExist:
             logger.warning(
-                "Received callback for unknown CheckoutRequestID: %s",
-                checkout_id
+                "Payment for CheckoutRequestID %s no longer exists.",
+                checkout_id,
             )
 
-            # Acknowledge the callback, but do not change any payment.
             return JsonResponse(
                 {"ResultCode": 0, "ResultDesc": "Callback received"}
             )
@@ -81,12 +124,14 @@ def mpesa_callback(request):
 
         # Ignore duplicate callbacks for an already-finalized payment.
         if payment.status != Payment.Status.PENDING:
-            payment.save(update_fields=[
-                "callback_data",
-                "result_code",
-                "result_description",
-                "updated_at",
-            ])
+            payment.save(
+                update_fields=[
+                    "callback_data",
+                    "result_code",
+                    "result_description",
+                    "updated_at",
+                ]
+            )
 
             return JsonResponse(
                 {"ResultCode": 0, "ResultDesc": "Callback already processed"}
@@ -95,13 +140,15 @@ def mpesa_callback(request):
         if str(result_code) != "0":
             payment.status = Payment.Status.FAILED
 
-            payment.save(update_fields=[
-                "status",
-                "callback_data",
-                "result_code",
-                "result_description",
-                "updated_at",
-            ])
+            payment.save(
+                update_fields=[
+                    "status",
+                    "callback_data",
+                    "result_code",
+                    "result_description",
+                    "updated_at",
+                ]
+            )
 
             return JsonResponse(
                 {"ResultCode": 0, "ResultDesc": "Payment failure recorded"}
@@ -124,16 +171,19 @@ def mpesa_callback(request):
             payment.result_description = (
                 "Successful callback received without required payment metadata."
             )
-            payment.save(update_fields=[
-                "callback_data",
-                "result_code",
-                "result_description",
-                "updated_at",
-            ])
+
+            payment.save(
+                update_fields=[
+                    "callback_data",
+                    "result_code",
+                    "result_description",
+                    "updated_at",
+                ]
+            )
 
             logger.error(
                 "Incomplete successful callback for payment %s",
-                payment.pk
+                payment.pk,
             )
 
             return JsonResponse(
@@ -147,12 +197,15 @@ def mpesa_callback(request):
             payment.result_description = (
                 "Callback payment details could not be validated."
             )
-            payment.save(update_fields=[
-                "callback_data",
-                "result_code",
-                "result_description",
-                "updated_at",
-            ])
+
+            payment.save(
+                update_fields=[
+                    "callback_data",
+                    "result_code",
+                    "result_description",
+                    "updated_at",
+                ]
+            )
 
             return JsonResponse(
                 {"ResultCode": 0, "ResultDesc": "Callback received"}
@@ -167,48 +220,58 @@ def mpesa_callback(request):
                 "Callback details do not match the original payment. "
                 "Manual verification required."
             )
-            payment.save(update_fields=[
-                "callback_data",
-                "result_code",
-                "result_description",
-                "updated_at",
-            ])
+
+            payment.save(
+                update_fields=[
+                    "callback_data",
+                    "result_code",
+                    "result_description",
+                    "updated_at",
+                ]
+            )
 
             logger.error(
                 "Payment callback mismatch for payment %s",
-                payment.pk
+                payment.pk,
             )
 
             return JsonResponse(
                 {"ResultCode": 0, "ResultDesc": "Callback received"}
             )
 
+        # Record successful payment.
         payment.status = Payment.Status.SUCCESSFUL
         payment.mpesa_receipt_number = str(receipt)
 
-        payment.save(update_fields=[
-            "status",
-            "mpesa_receipt_number",
-            "callback_data",
-            "result_code",
-            "result_description",
-            "updated_at",
-        ])
-
-    if payment.order.status == payment.order.Status.PENDING:
-        payment.order.status = payment.order.Status.CONFIRMED
-        payment.order.save(update_fields=["status", "updated_at"])
-
-        # Notify the buyer that payment was received and the order confirmed.
-        create_notification(
-            recipient=payment.order.buyer,
-            notification_type="payment_successful",
-            message="Your payment was received and your order has been confirmed.",
+        payment.save(
+            update_fields=[
+                "status",
+                "mpesa_receipt_number",
+                "callback_data",
+                "result_code",
+                "result_description",
+                "updated_at",
+            ]
         )
+
+        # Confirm the order and create its notification in the same
+        # transaction as the successful payment update.
+        if order.status == Order.Status.PENDING:
+            order.status = Order.Status.CONFIRMED
+            order.save(update_fields=["status", "updated_at"])
+
+            create_notification(
+                recipient=order.buyer,
+                notification_type="payment_successful",
+                message=(
+                    "Your payment was received and your order has been confirmed."
+                ),
+            )
 
     return JsonResponse(
         {"ResultCode": 0, "ResultDesc": "Payment processed successfully"}
     )
+
 
 class PaymentStatusView(APIView):
     """
@@ -222,19 +285,22 @@ class PaymentStatusView(APIView):
         payment = get_object_or_404(
             Payment.objects.select_related("order"),
             pk=payment_id,
-            order__buyer=request.user
+            order__buyer=request.user,
         )
 
         # Do not query Safaricom for payments already finalized.
         if payment.status != Payment.Status.PENDING:
-            return Response({
-                "payment_id": payment.id,
-                "order_number": str(payment.order.order_number),
-                "amount": str(payment.amount),
-                "status": payment.status,
-                "receipt_number": payment.mpesa_receipt_number,
-                "message": "This payment has already been finalized."
-            }, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    "payment_id": payment.id,
+                    "order_number": str(payment.order.order_number),
+                    "amount": str(payment.amount),
+                    "status": payment.status,
+                    "receipt_number": payment.mpesa_receipt_number,
+                    "message": "This payment has already been finalized.",
+                },
+                status=status.HTTP_200_OK,
+            )
 
         try:
             daraja_response = query_stk_push(payment)
@@ -242,39 +308,50 @@ class PaymentStatusView(APIView):
         except (MpesaAPIError, MpesaConfigurationError):
             logger.exception(
                 "STK Query failed for payment %s",
-                payment.pk
+                payment.pk,
             )
 
-            return Response({
-                "payment_id": payment.id,
-                "status": payment.status,
-                "message": "Unable to retrieve the latest payment status. Please try again."
-            }, status=status.HTTP_502_BAD_GATEWAY)
+            return Response(
+                {
+                    "payment_id": payment.id,
+                    "status": payment.status,
+                    "message": (
+                        "Unable to retrieve the latest payment status. "
+                        "Please try again."
+                    ),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         except ValueError:
             logger.exception(
                 "Invalid STK Query request for payment %s",
-                payment.pk
+                payment.pk,
             )
 
-            return Response({
-                "payment_id": payment.id,
-                "status": payment.status,
-                "message": "This payment cannot currently be queried."
-            }, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "payment_id": payment.id,
+                    "status": payment.status,
+                    "message": "This payment cannot currently be queried.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # ResponseCode 0 means the query request was accepted,
         # not necessarily that the customer completed payment.
-        return Response({
-            "payment_id": payment.id,
-            "order_number": str(payment.order.order_number),
-            "amount": str(payment.amount),
-            "status": payment.status,
-            "query_response": daraja_response,
-            "message": (
-                "Payment status query accepted. "
-                "The recorded payment status remains unchanged "
-                "until a verified callback is processed."
-            )
-        }, status=status.HTTP_200_OK)
-    
+        return Response(
+            {
+                "payment_id": payment.id,
+                "order_number": str(payment.order.order_number),
+                "amount": str(payment.amount),
+                "status": payment.status,
+                "query_response": daraja_response,
+                "message": (
+                    "Payment status query accepted. "
+                    "The recorded payment status remains unchanged "
+                    "until a verified callback is processed."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
