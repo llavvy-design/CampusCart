@@ -1,4 +1,3 @@
-
 from io import BytesIO
 import tempfile
 
@@ -12,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from .models import Post, Comment, Like
+from notifications.models import Notification
 
 
 class CommunityAPITests(APITestCase):
@@ -354,3 +354,87 @@ class CommunityAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["results"]), 5)
         self.assertEqual(response.data["count"], 17)
+    # -------------------------
+    # NOTIFICATION INTEGRATION TESTS
+    # -------------------------
+
+    def test_liking_another_students_post_creates_notification(self):
+        response = self.client.post(
+            f"/api/community/posts/{self.other_post.pk}/like/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["liked"])
+
+        notification = Notification.objects.get(
+            recipient=self.other_user,
+            actor=self.user,
+        )
+
+        self.assertEqual(
+            notification.notification_type,
+            Notification.NotificationType.POST_LIKED,
+        )
+        self.assertEqual(
+            notification.message,
+            "Someone liked your post.",
+        )
+        self.assertEqual(
+            notification.target_url,
+            f"/community/posts/{self.other_post.pk}/",
+        )
+
+    def test_commenting_on_another_students_post_creates_notification(self):
+        response = self.client.post(
+            f"/api/community/posts/{self.other_post.pk}/comments/",
+            {"content": "This is a great post!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        notification = Notification.objects.get(
+            recipient=self.other_user,
+            actor=self.user,
+        )
+
+        self.assertEqual(
+            notification.notification_type,
+            Notification.NotificationType.POST_COMMENTED,
+        )
+        self.assertEqual(
+            notification.message,
+            "Someone commented on your post.",
+        )
+
+    def test_liking_own_post_does_not_create_notification(self):
+        response = self.client.post(self.like_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["liked"])
+
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_commenting_on_own_post_does_not_create_notification(self):
+        response = self.client.post(
+            self.comments_url,
+            {"content": "Adding another thought to my post."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_unliking_a_post_does_not_create_notification(self):
+        Like.objects.create(
+            post=self.other_post,
+            user=self.user,
+        )
+
+        response = self.client.post(
+            f"/api/community/posts/{self.other_post.pk}/like/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["liked"])
+        self.assertEqual(Notification.objects.count(), 0)

@@ -79,6 +79,63 @@ class MpesaCallbackTests(TestCase):
         self.assertEqual(self.payment.mpesa_receipt_number, "ABC123XYZ")
         self.assertEqual(self.order.status, Order.Status.CONFIRMED)
 
+    def test_successful_payment_creates_buyer_notification(self):
+        from notifications.models import Notification
+
+        callback = {
+            "CheckoutRequestID": "ws_CO_TEST_123",
+            "ResultCode": 0,
+            "ResultDesc": "The service request is processed successfully",
+            "CallbackMetadata": {
+                "Item": [
+                    {"Name": "Amount", "Value": 500},
+                    {"Name": "MpesaReceiptNumber", "Value": "ABC123XYZ"},
+                    {"Name": "PhoneNumber", "Value": 254712345678},
+                ]
+            },
+        }
+
+        response = self.send_callback(callback)
+
+        self.assertEqual(response.status_code, 200)
+
+        notification = Notification.objects.get(
+            recipient=self.user,
+            notification_type="payment_successful",
+        )
+
+        self.assertEqual(
+            notification.message,
+            "Your payment was received and your order has been confirmed.",
+        )
+        self.assertIsNone(notification.actor)
+
+    def test_duplicate_successful_callback_does_not_create_duplicate_notification(self):
+        from notifications.models import Notification
+
+        callback = {
+            "CheckoutRequestID": "ws_CO_TEST_123",
+            "ResultCode": 0,
+            "ResultDesc": "The service request is processed successfully",
+            "CallbackMetadata": {
+                "Item": [
+                    {"Name": "Amount", "Value": 500},
+                    {"Name": "MpesaReceiptNumber", "Value": "ABC123XYZ"},
+                    {"Name": "PhoneNumber", "Value": 254712345678},
+                ]
+            },
+        }
+
+        self.send_callback(callback)
+        self.send_callback(callback)
+
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.user,
+                notification_type="payment_successful",
+            ).count(),
+            1,
+        )
     def test_failed_payment_does_not_confirm_order(self):
         callback = {
             "CheckoutRequestID": "ws_CO_TEST_123",

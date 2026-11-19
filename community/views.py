@@ -1,4 +1,3 @@
-
 from django.db.models import Count, Exists, OuterRef
 from django.shortcuts import get_object_or_404
 
@@ -19,6 +18,9 @@ from .models import Post, Comment, Like
 from .permissions import IsAuthorOrReadOnly
 from .serializers import PostSerializer, CommentSerializer
 from .pagination import CommunityPagination
+from notifications.services.notification_service import (
+    create_notification,
+)
 
 class PostListCreateView(generics.ListCreateAPIView):
     serializer_class = PostSerializer
@@ -113,12 +115,18 @@ class CommentListCreateView(generics.ListCreateAPIView):
             pk=self.kwargs["post_id"],
         )
 
-        serializer.save(
+        comment = serializer.save(
             post=post,
             author=self.request.user,
         )
 
-
+        create_notification(
+            recipient=post.author,
+            actor=self.request.user,
+            notification_type="post_commented",
+            message="Someone commented on your post.",
+            target_url=f"/community/posts/{post.pk}/",
+    )
 class CommentDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = CommentSerializer
     permission_classes = [
@@ -130,7 +138,6 @@ class CommentDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Comment.objects.filter(
             post_id=self.kwargs["post_id"]
         ).select_related("author", "post")
-
 
 class PostLikeToggleView(APIView):
     permission_classes = [IsAuthenticated]
@@ -148,6 +155,14 @@ class PostLikeToggleView(APIView):
             liked = False
         else:
             liked = True
+
+            create_notification(
+                recipient=post.author,
+                actor=request.user,
+                notification_type="post_liked",
+                message="Someone liked your post.",
+                target_url=f"/community/posts/{post.pk}/",
+            )
 
         return Response(
             {

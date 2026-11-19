@@ -20,7 +20,7 @@ from .services.mpesa import (
     normalize_mpesa_phone,
     query_stk_push,
 )
-
+from notifications.services.notification_service import create_notification
 
 logger = logging.getLogger(__name__)
 
@@ -195,15 +195,20 @@ def mpesa_callback(request):
             "updated_at",
         ])
 
-        # Confirm the order only when it is still pending.
-        if payment.order.status == payment.order.Status.PENDING:
-            payment.order.status = payment.order.Status.CONFIRMED
-            payment.order.save(update_fields=["status", "updated_at"])
+    if payment.order.status == payment.order.Status.PENDING:
+        payment.order.status = payment.order.Status.CONFIRMED
+        payment.order.save(update_fields=["status", "updated_at"])
+
+        # Notify the buyer that payment was received and the order confirmed.
+        create_notification(
+            recipient=payment.order.buyer,
+            notification_type="payment_successful",
+            message="Your payment was received and your order has been confirmed.",
+        )
 
     return JsonResponse(
         {"ResultCode": 0, "ResultDesc": "Payment processed successfully"}
     )
-
 
 class PaymentStatusView(APIView):
     """

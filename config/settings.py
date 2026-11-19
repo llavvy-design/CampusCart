@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "marketplace.apps.MarketplaceConfig",
     "community.apps.CommunityConfig",
     "payments.apps.PaymentsConfig",
+    "notifications.apps.NotificationsConfig",
 ]
 
 # --------------------------------------------------
