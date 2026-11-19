@@ -1,4 +1,3 @@
-
 from decimal import Decimal
 
 from django.db import transaction
@@ -10,16 +9,160 @@ from payments.services.mpesa import normalize_mpesa_phone
 
 from .models import (
     Cart,
+    Category,
     Order,
     OrderItem,
     Product,
 )
 
 
+# ==================================================
+# PRODUCT SERIALIZERS
+# ==================================================
+
+class ProductSerializer(serializers.ModelSerializer):
+    seller_username = serializers.CharField(
+        source="seller.username",
+        read_only=True,
+    )
+
+    category_name = serializers.CharField(
+        source="category.name",
+        read_only=True,
+    )
+
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.filter(is_active=True),
+    )
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "seller_username",
+            "category",
+            "category_name",
+            "name",
+            "description",
+            "price",
+            "condition",
+            "image",
+            "stock",
+            "location",
+            "is_available",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "seller_username",
+            "category_name",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_name(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Product name cannot be empty."
+            )
+
+        return value
+
+    def validate_description(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Product description cannot be empty."
+            )
+
+        return value
+
+    def validate_price(self, value):
+        if value <= Decimal("0.00"):
+            raise serializers.ValidationError(
+                "Product price must be greater than zero."
+            )
+
+        return value
+
+    def validate_image(self, value):
+        if value and value.size > 5 * 1024 * 1024:
+            raise serializers.ValidationError(
+                "Product images cannot exceed 5 MB."
+            )
+
+        return value
+
+    def validate(self, attrs):
+        """
+        An available product must have at least one item in stock.
+
+        For partial updates, use submitted values when provided and
+        otherwise fall back to the existing instance values.
+        """
+        stock = attrs.get(
+            "stock",
+            self.instance.stock if self.instance is not None else 1,
+        )
+        is_available = attrs.get(
+            "is_available",
+            self.instance.is_available if self.instance is not None else True,
+        )
+
+        if is_available and stock < 1:
+            raise serializers.ValidationError({
+                "stock": (
+                    "An available product must have at least one item in stock."
+                )
+            })
+
+        return attrs
+
+
+class PublicProductSerializer(serializers.ModelSerializer):
+    seller_username = serializers.CharField(
+        source="seller.username",
+        read_only=True,
+    )
+
+    category_name = serializers.CharField(
+        source="category.name",
+        read_only=True,
+    )
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "seller_username",
+            "category",
+            "category_name",
+            "name",
+            "description",
+            "price",
+            "condition",
+            "image",
+            "stock",
+            "location",
+            "is_available",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+# ==================================================
+# CHECKOUT SERIALIZER
+# ==================================================
+
 class CheckoutSerializer(serializers.Serializer):
     phone_number = serializers.CharField(
         max_length=20,
-        required=True
+        required=True,
     )
 
     def validate_phone_number(self, value):
@@ -28,6 +171,10 @@ class CheckoutSerializer(serializers.Serializer):
         except ValueError as error:
             raise serializers.ValidationError(str(error))
 
+
+# ==================================================
+# ORDER CREATION SERIALIZER
+# ==================================================
 
 class OrderCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -182,7 +329,7 @@ class SellerOrderItemSerializer(serializers.ModelSerializer):
     line_total = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
-        read_only=True
+        read_only=True,
     )
 
     class Meta:
@@ -201,7 +348,7 @@ class BuyerOrderItemSerializer(serializers.ModelSerializer):
     line_total = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
-        read_only=True
+        read_only=True,
     )
 
     class Meta:
@@ -223,7 +370,7 @@ class BuyerOrderItemSerializer(serializers.ModelSerializer):
 class SellerOrderListSerializer(serializers.ModelSerializer):
     buyer_username = serializers.CharField(
         source="buyer.username",
-        read_only=True
+        read_only=True,
     )
 
     item_count = serializers.SerializerMethodField()
@@ -248,12 +395,12 @@ class SellerOrderListSerializer(serializers.ModelSerializer):
 class SellerOrderDetailSerializer(serializers.ModelSerializer):
     buyer_username = serializers.CharField(
         source="buyer.username",
-        read_only=True
+        read_only=True,
     )
 
     items = SellerOrderItemSerializer(
         many=True,
-        read_only=True
+        read_only=True,
     )
 
     class Meta:
@@ -275,7 +422,7 @@ class SellerOrderDetailSerializer(serializers.ModelSerializer):
 
 class SellerOrderStatusUpdateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(
-        choices=Order.Status.choices
+        choices=Order.Status.choices,
     )
 
     def validate_status(self, new_status):
@@ -401,12 +548,12 @@ class BuyerOrderDetailSerializer(serializers.ModelSerializer):
 
     items = BuyerOrderItemSerializer(
         many=True,
-        read_only=True
+        read_only=True,
     )
 
     payments = PaymentSummarySerializer(
         many=True,
-        read_only=True
+        read_only=True,
     )
 
     class Meta:

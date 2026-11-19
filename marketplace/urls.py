@@ -4,8 +4,11 @@ from .views import (
     BuyerOrderCancellationView,
     BuyerOrderDetailView,
     BuyerOrderListView,
+    MyProductListView,
     OrderCheckoutView,
     OrderCreateView,
+    ProductDetailView,
+    ProductListCreateView,
     SellerOrderCancellationView,
     SellerOrderDetailView,
     SellerOrderListView,
@@ -16,6 +19,23 @@ from .views import (
 app_name = "marketplace"
 
 urlpatterns = [
+    # Public product browsing and seller product management.
+    path(
+        "products/",
+        ProductListCreateView.as_view(),
+        name="product_list_create",
+    ),
+    path(
+        "products/<int:product_id>/",
+        ProductDetailView.as_view(),
+        name="product_detail",
+    ),
+    path(
+        "my-products/",
+        MyProductListView.as_view(),
+        name="my_product_list",
+    ),
+
     # Buyer order creation and checkout.
     path(
         "orders/",
