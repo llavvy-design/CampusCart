@@ -22,6 +22,7 @@ from payments.services.mpesa import (
 )
 
 from .models import Order, Product
+from .pagination import ProductPagination
 from .serializers import (
     BuyerOrderDetailSerializer,
     BuyerOrderListSerializer,
@@ -190,19 +191,16 @@ class ProductListCreateView(APIView):
 
         products = products.order_by(ordering, "pk")
 
+        paginator = ProductPagination()
+        page = paginator.paginate_queryset(products, request, view=self)
+
         serializer = PublicProductSerializer(
-            products,
+            page,
             many=True,
             context={"request": request},
         )
 
-        return Response(
-            {
-                "count": products.count(),
-                "products": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
         serializer = ProductSerializer(
@@ -245,19 +243,16 @@ class MyProductListView(APIView):
             .order_by("-created_at", "-pk")
         )
 
+        paginator = ProductPagination()
+        page = paginator.paginate_queryset(products, request, view=self)
+
         serializer = ProductSerializer(
-            products,
+            page,
             many=True,
             context={"request": request},
         )
 
-        return Response(
-            {
-                "count": products.count(),
-                "products": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return paginator.get_paginated_response(serializer.data)
 
 
 class ProductDetailView(APIView):

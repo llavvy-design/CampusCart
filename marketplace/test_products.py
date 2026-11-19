@@ -257,6 +257,56 @@ class ProductManagementAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     # --------------------------------------------------
+    # PRODUCT PAGINATION
+    # --------------------------------------------------
+
+    def test_public_products_use_default_page_size(self):
+        for number in range(12):
+            self.create_product(name=f"Pagination Product {number}")
+
+        response = self.client.get(self.product_list_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 13)
+        self.assertEqual(len(response.data["products"]), 10)
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
+
+    def test_public_products_support_custom_page_size(self):
+        for number in range(12):
+            self.create_product(name=f"Custom Page Product {number}")
+
+        response = self.client.get(
+            self.product_list_url,
+            {"page_size": 5},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 13)
+        self.assertEqual(len(response.data["products"]), 5)
+
+    def test_public_product_page_size_is_capped_at_50(self):
+        for number in range(54):
+            self.create_product(name=f"Maximum Page Product {number}")
+
+        response = self.client.get(
+            self.product_list_url,
+            {"page_size": 100},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 55)
+        self.assertEqual(len(response.data["products"]), 50)
+
+    def test_invalid_product_page_returns_404(self):
+        response = self.client.get(
+            self.product_list_url,
+            {"page": 999},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --------------------------------------------------
     # SEARCH AND FILTERS
     # --------------------------------------------------
 
@@ -384,6 +434,22 @@ class ProductManagementAPITests(APITestCase):
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
         ])
+
+    def test_seller_products_are_paginated(self):
+        self.client.force_authenticate(user=self.seller)
+
+        for number in range(12):
+            self.create_product(name=f"Seller Pagination Product {number}")
+
+        response = self.client.get(
+            self.my_products_url,
+            {"page_size": 5, "page": 2},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 13)
+        self.assertEqual(len(response.data["products"]), 5)
+        self.assertIsNotNone(response.data["previous"])
 
     # --------------------------------------------------
     # PRODUCT UPDATES
