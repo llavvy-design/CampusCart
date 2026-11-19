@@ -83,7 +83,7 @@ class StudentRegistrationSerializer(serializers.Serializer):
 
         return value
 
-    
+
     def validate_student_id(self, value):
         if value and StudentProfile.objects.filter(
             student_id=value
@@ -138,3 +138,134 @@ class StudentRegistrationSerializer(serializers.Serializer):
         )
 
         return user
+
+
+class MyProfileSerializer(serializers.ModelSerializer):
+
+    # Account fields from Django's built-in User model
+    username = serializers.CharField(
+        source="user.username",
+        read_only=True
+    )
+
+    email = serializers.EmailField(
+        source="user.email",
+        required=False
+    )
+
+    first_name = serializers.CharField(
+        source="user.first_name",
+        required=False,
+        allow_blank=True
+    )
+
+    last_name = serializers.CharField(
+        source="user.last_name",
+        required=False,
+        allow_blank=True
+    )
+
+    class Meta:
+        model = StudentProfile
+
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "student_id",
+            "institution",
+            "course",
+            "year_of_study",
+            "phone_number",
+            "bio",
+            "avatar",
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "username",
+            "student_id",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_email(self, value):
+        existing_user = User.objects.filter(
+            email__iexact=value
+        ).exclude(
+            pk=self.instance.user_id
+        )
+
+        if existing_user.exists():
+            raise serializers.ValidationError(
+                "An account with this email already exists."
+            )
+
+        return value
+
+    def validate_avatar(self, value):
+        max_size = 5 * 1024 * 1024  # 5 MB
+
+        if value and value.size > max_size:
+            raise serializers.ValidationError(
+                "Profile picture must not exceed 5 MB."
+            )
+
+        return value
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+
+        # Extract account information separately.
+        user_data = validated_data.pop("user", {})
+
+        # Update the Django User fields.
+        user = instance.user
+
+        for field, value in user_data.items():
+            setattr(user, field, value)
+
+        if user_data:
+            user.save(update_fields=list(user_data.keys()))
+
+        # Update the StudentProfile fields.
+        return super().update(instance, validated_data)
+
+
+class PublicStudentProfileSerializer(serializers.ModelSerializer):
+
+    username = serializers.CharField(
+        source="user.username",
+        read_only=True
+    )
+
+    first_name = serializers.CharField(
+        source="user.first_name",
+        read_only=True
+    )
+
+    last_name = serializers.CharField(
+        source="user.last_name",
+        read_only=True
+    )
+
+    class Meta:
+        model = StudentProfile
+
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "institution",
+            "course",
+            "year_of_study",
+            "bio",
+            "avatar",
+        ]
+
+        read_only_fields = fields

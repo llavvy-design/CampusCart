@@ -1,14 +1,24 @@
+from django.shortcuts import get_object_or_404
+
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import (
+    JSONParser,
+    MultiPartParser,
+    FormParser,
+)
 
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework import generics, status
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 
-from .serializers import StudentRegistrationSerializer
-
+from .models import StudentProfile
+from .serializers import (
+    StudentRegistrationSerializer,
+    MyProfileSerializer,
+    PublicStudentProfileSerializer,
+)
 
 class StudentRegistrationView(generics.CreateAPIView):
     serializer_class = StudentRegistrationSerializer
@@ -74,3 +84,32 @@ class StudentLogoutView(APIView):
                 {"error": "Invalid or expired refresh token."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+class MyProfileView(generics.RetrieveUpdateAPIView):
+    serializer_class = MyProfileSerializer
+    permission_classes = [IsAuthenticated]
+
+    parser_classes = [
+        JSONParser,
+        MultiPartParser,
+        FormParser,
+    ]
+
+    def get_object(self):
+        return get_object_or_404(
+            StudentProfile.objects.select_related("user"),
+            user=self.request.user,
+        )
+
+
+class PublicStudentProfileView(generics.RetrieveAPIView):
+    serializer_class = PublicStudentProfileSerializer
+    permission_classes = [AllowAny]
+
+    queryset = StudentProfile.objects.select_related(
+        "user"
+    ).filter(
+        user__is_active=True
+    )
+
+    lookup_field = "pk"
+    lookup_url_kwarg = "student_id"
