@@ -870,3 +870,25 @@ class SellerOrderCancellationView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class CategoryListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .models import Category
+
+        categories = Category.objects.filter(
+            is_active=True
+        ).order_by("name")
+
+        data = [
+            {
+                "id": category.id,
+                "name": category.name,
+            }
+            for category in categories
+        ]
+
+        return Response(data, status=status.HTTP_200_OK)
+

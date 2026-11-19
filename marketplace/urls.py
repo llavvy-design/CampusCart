@@ -4,6 +4,7 @@ from .views import (
     BuyerOrderCancellationView,
     BuyerOrderDetailView,
     BuyerOrderListView,
+    CategoryListView,
     MyProductListView,
     OrderCheckoutView,
     OrderCreateView,
@@ -14,12 +15,39 @@ from .views import (
     SellerOrderListView,
     SellerOrderStatusUpdateView,
 )
+from .cart_views import (
+    CartClearView,
+    CartItemDetailView,
+    CartView,
+)
 
 
 app_name = "marketplace"
 
 urlpatterns = [
     # Public product browsing and seller product management.
+    path(
+        "categories/",
+        CategoryListView.as_view(),
+        name="category_list",
+    ),
+
+    path(
+        "cart/",
+        CartView.as_view(),
+        name="cart",
+    ),
+    path(
+        "cart/items/<int:item_id>/",
+        CartItemDetailView.as_view(),
+        name="cart_item_detail",
+    ),
+    path(
+        "cart/clear/",
+        CartClearView.as_view(),
+        name="cart_clear",
+    ),
+
     path(
         "products/",
         ProductListCreateView.as_view(),

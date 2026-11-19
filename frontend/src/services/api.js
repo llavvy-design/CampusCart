@@ -25,6 +25,13 @@ const attachAccessToken = (config) => {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
 
+  if (
+    typeof FormData !== "undefined" &&
+    config.data instanceof FormData
+  ) {
+    config.headers.delete("Content-Type");
+  }
+
   return config;
 };
 
