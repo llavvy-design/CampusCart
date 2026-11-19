@@ -16,6 +16,8 @@ from payments.services.mpesa import (
 
 from .models import Order, Product
 from .serializers import (
+    BuyerOrderDetailSerializer,
+    BuyerOrderListSerializer,
     CheckoutSerializer,
     OrderCreateSerializer,
     SellerOrderCancellationSerializer,
@@ -145,6 +147,190 @@ class OrderCheckoutView(APIView):
                 ),
             },
             status=status.HTTP_202_ACCEPTED,
+        )
+
+
+# ==================================================
+# BUYER ORDER MANAGEMENT
+# ==================================================
+
+class BuyerOrderListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        orders = (
+            Order.objects
+            .filter(buyer=request.user)
+            .select_related("seller")
+            .prefetch_related("items", "payments")
+            .order_by("-created_at", "-pk")
+        )
+
+        serializer = BuyerOrderListSerializer(
+            orders,
+            many=True,
+        )
+
+        return Response(
+            {
+                "count": orders.count(),
+                "orders": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class BuyerOrderDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, order_id):
+        order = get_object_or_404(
+            Order.objects
+            .filter(buyer=request.user)
+            .select_related("seller")
+            .prefetch_related("items", "payments"),
+            pk=order_id,
+        )
+
+        serializer = BuyerOrderDetailSerializer(order)
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class BuyerOrderCancellationView(APIView):
+    """
+    Allow a buyer to cancel an eligible unpaid order.
+
+    The order, its payments and its products are locked before
+    stock is restored. The locking order is consistent with the
+    M-Pesa callback and seller cancellation workflows.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, order_id):
+        with transaction.atomic():
+            # Only the buyer who owns this order can cancel it.
+            order = get_object_or_404(
+                Order.objects.select_for_update(),
+                pk=order_id,
+                buyer=request.user,
+            )
+
+            # Lock all payment attempts for this order.
+            payments = list(
+                Payment.objects
+                .select_for_update()
+                .filter(order=order)
+                .order_by("pk")
+            )
+
+            if order.status != Order.Status.PENDING:
+                return Response(
+                    {
+                        "detail": (
+                            "You can only cancel orders that are still pending."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if any(
+                payment.status == Payment.Status.PENDING
+                for payment in payments
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            "A payment is still being processed. "
+                            "Please wait for its result before cancelling."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if any(
+                payment.status == Payment.Status.SUCCESSFUL
+                for payment in payments
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            "This order has a successful payment. "
+                            "A refund process is required before cancellation."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # Retrieve order items before restoring stock.
+            order_items = list(
+                order.items.all().order_by("product_id")
+            )
+
+            product_ids = [
+                item.product_id
+                for item in order_items
+            ]
+
+            # Lock products in a consistent order.
+            locked_products = {
+                product.pk: product
+                for product in Product.objects
+                .select_for_update()
+                .filter(pk__in=product_ids)
+                .order_by("pk")
+            }
+
+            if len(locked_products) != len(set(product_ids)):
+                return Response(
+                    {
+                        "detail": (
+                            "One or more products could not be found. "
+                            "Stock restoration was not completed."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # Restore the reserved stock.
+            for item in order_items:
+                product = locked_products[item.product_id]
+                product.stock += item.quantity
+                product.save(
+                    update_fields=["stock", "updated_at"]
+                )
+
+            # Mark the order cancelled in the same transaction.
+            order.status = Order.Status.CANCELLED
+            order.save(update_fields=["status", "updated_at"])
+
+            # Notify the seller, if this order has an assigned seller.
+            if order.seller is not None:
+                create_notification(
+                    recipient=order.seller,
+                    actor=request.user,
+                    notification_type="order_status_updated",
+                    message=(
+                        "The buyer cancelled their order. "
+                        "The reserved product stock has been released."
+                    ),
+                )
+
+            response_serializer = BuyerOrderDetailSerializer(order)
+
+        return Response(
+            {
+                "message": (
+                    "Order cancelled successfully. "
+                    "Product stock has been restored."
+                ),
+                "order": response_serializer.data,
+            },
+            status=status.HTTP_200_OK,
         )
 
 

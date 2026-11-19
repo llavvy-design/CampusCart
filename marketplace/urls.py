@@ -1,6 +1,9 @@
 from django.urls import path
 
 from .views import (
+    BuyerOrderCancellationView,
+    BuyerOrderDetailView,
+    BuyerOrderListView,
     OrderCheckoutView,
     OrderCreateView,
     SellerOrderCancellationView,
@@ -23,6 +26,23 @@ urlpatterns = [
         "orders/<int:order_id>/checkout/",
         OrderCheckoutView.as_view(),
         name="order_checkout",
+    ),
+
+    # Buyer order management.
+    path(
+        "my-orders/",
+        BuyerOrderListView.as_view(),
+        name="buyer_order_list",
+    ),
+    path(
+        "my-orders/<int:order_id>/",
+        BuyerOrderDetailView.as_view(),
+        name="buyer_order_detail",
+    ),
+    path(
+        "my-orders/<int:order_id>/cancel/",
+        BuyerOrderCancellationView.as_view(),
+        name="buyer_order_cancel",
     ),
 
     # Seller order management.
